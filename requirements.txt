@@ -1,0 +1,8 @@
+# Análisis de Datos y Visualización
+pandas>=2.0.0
+numpy>=1.24.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Manejo de archivos Parquet
+pyarrow>=12.0.0
