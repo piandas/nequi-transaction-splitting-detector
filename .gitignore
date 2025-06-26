@@ -188,4 +188,4 @@ cython_debug/
 
 # Project specific ignores
 *.log
-data/
+*.parquet
