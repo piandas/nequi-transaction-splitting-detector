@@ -45,8 +45,6 @@ def main():
     )
     df_day["transaction_type"] = df_day["transaction_type"].astype("category")
 
-    # (Opcional) Más chequeos: montos <=0, fechas inválidas, etc.
-
     # Particionar y escribir
     out_dir = os.path.join(
         args.output_dir,
