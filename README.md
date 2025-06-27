@@ -100,6 +100,7 @@ Este proyecto aborda la detección de **Mala Práctica Transaccional** enfocada 
 - El repositorio contiene scripts, modelo entrenado y features de ejemplo (enero).
 - Solo se suben los features de enero como muestra, para facilitar pruebas y mostrar el formato esperado. Los features completos no se incluyen para evitar archivos pesados y porque pueden regenerse fácilmente.
 - El pipeline está preparado para generar todos los features a partir de los datos brutos, siguiendo los scripts de limpieza y featurización.
+- El archivo de la imagen Docker (`nequi-pipeline.tar`) no fue subido a GitHub por su tamaño. Puedes descargarlo desde: [Google Drive](https://drive.google.com/file/d/1vZWITMKi3HA3VHiy51JO7CooLOWabibP/view?usp=sharing)
 - Para probar el pipeline, solo necesitas Docker y seguir las instrucciones de la sección 4.
 
 ---

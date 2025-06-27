@@ -190,3 +190,4 @@ cython_debug/
 *.log
 *.parquet
 !data/features/year=2021/month=01/**/*.parquet
+nequi-pipeline.tar
