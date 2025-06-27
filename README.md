@@ -1,98 +1,152 @@
-# Nequi – Detección de Fraccionamiento Transaccional
+# Detección de Fraccionamiento Transaccional – Prueba Técnica NEQUI
 
-## Paso 1: Alcance y Planteamiento del Problema
+## Propósito
 
-### 1. Descripción del problema
-El **fraccionamiento transaccional** consiste en dividir una transacción de alto valor en varias de menor monto que, sumadas, igualan o superan ligeramente el valor original. Esta técnica suele usarse para evadir controles antifraude o límites regulatorios, por lo que necesitamos detectarla de forma automática y diaria sobre el histórico de operaciones.
-
-### 2. Objetivo
-Construir un **producto de datos** que, al ejecutarse, analice las transacciones de las últimas 24 horas y asigne a cada cuenta un **Suspicion Score** basado en desviaciones respecto a su comportamiento “normal” y a patrones complementarios (comercio, sucursal, perfil de usuario, temporalidad). Con un único umbral (p. ej. Score ≥ 3σ) se generará una alerta para investigación.
+Este proyecto aborda la detección de **Mala Práctica Transaccional** enfocada en el **Fraccionamiento Transaccional**: identificar usuarios que dividen grandes montos en múltiples transacciones pequeñas en una ventana de 24h, usando datos reales y sintéticos proporcionados.
 
 ---
 
-## 3. Variables originales y su uso
+## 1. Alcance y Objetivo
 
-| Columna              | Descripción                                                                                                                                             |
-|----------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `_id`                | Identificador único de registro. Se usa para trazar cada transacción en el dataset y evitar duplicados.                                                |
-| `merchant_id`        | Código único del comercio o aliado. Permite derivar cuántos comercios distintos participan en la ventana y si el fraccionamiento ocurre siempre en uno solo. |
-| `subsidiary`         | Código de la sucursal o “punto físico”. Ayuda a medir dispersión geográfica del fraccionamiento.                                                         |
-| `transaction_date`   | Fecha y hora de la transacción en el Core financiero. Base para construir la ventana de 24 h y extraer información horaria y de intervalos.             |
-| `account_number`     | Número único de cuenta de origen. Núcleo del análisis: agrupamos transacciones por cuenta.                                                              |
-| `user_id`            | Identificador del usuario dueño de la cuenta. Permite perfilar comportamiento agregado de todas sus cuentas.                                             |
-| `transaction_amount` | Monto de la transacción (moneda local ficticia). Base para sumar montos en cada ventana y calcular z-scores de volumen.                                  |
-| `transaction_type`   | Naturaleza de la transacción (“debit” o “credit”). Nos centramos en débito para fraccionamiento, pero rastreamos ratio débito/crédito.                    |
+- **Objetivo:** Desarrollar un producto de datos capaz de identificar patrones de fraccionamiento transaccional, documentar el proceso y detallar cómo incorporar la solución en un marco operativo.
+- **Enfoque:** Se implementaron dos enfoques/modelos:
+  - **Modelo 1:** Basado en análisis descriptivo y reglas heurísticas.
+  - **Modelo 2:** Pipeline automatizado con machine learning (Isolation Forest) y scoring.
 
 ---
 
-## 4. Features derivadas y su rol
+## 2. Exploración y Evaluación de los Datos (EDA)
 
-| Feature                           | Definición                                                                                                                                             | Objetivo                                                                                                                                          |
-|-----------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
-| **cnt_24h**                       | Conteo de transacciones **débito** en las últimas 24 h.                                                                                                 | Captar picos de frecuencia.                                                                                                                       |
-| **sum_24h**                       | Suma de montos **débito** en las últimas 24 h.                                                                                                         | Medir el volumen total fragmentado.                                                                                                               |
-| **cnt_merchants_24h**             | Número de `merchant_id` distintos en la ventana de 24 h.                                                                                                | Distinguir si el fraccionamiento se concentra en un solo comercio o se dispersa en varios.                                                       |
-| **top_merchant_freq**             | Frecuencia (conteo) de transacciones en el `merchant_id` más repetido.                                                                                 | Detectar patrones de “mismo POS” o comercio favorito.                                                                                              |
-| **cnt_subsidiaries_24h**          | Número de `subsidiary` distintos en 24 h.                                                                                                               | Ver si las transacciones se reparten en varias sucursales para evadir límites locales.                                                            |
-| **ratio_same_sub**                | `cnt` en la sucursal más usada / `cnt_24h`.                                                                                                             | Medir concentración geográfica.                                                                                                                    |
-| **avg_cnt_24h_user**, **avg_sum_24h_user** | Media histórica (últimos 90 d) de `cnt_24h` y `sum_24h` para ese `user_id`.                                                                   | Contextualizar la anomalía respecto al perfil global del usuario (puede tener varias cuentas).                                                    |
-| **z_cnt_user**, **z_sum_user**    | Z-scores a nivel usuario: desviación de la ventana actual frente a su propia media y σ (últimos 90 d).                                                  | Ajustar el score para usuarios muy activos o muy inactivos.                                                                                        |
-| **pct_debit**, **pct_credit**     | Porcentaje de débito vs. crédito en la ventana de 24 h.                                                                                                 | Distinguir fraccionamiento puro de débitos frente a operaciones mixtas o reembolsos.                                                             |
-| **hour_of_day**, **day_of_week**  | Hora (0–23) y día de la semana (L–D) de cada transacción o de su ventana promedio.                                                                     | Captar patrones horarios o de fin de semana que sugieran scripts automáticos o comportamientos atípicos.                                          |
-| **tiempo_entre_tx**               | Media y desviación de los intervalos (en minutos) entre transacciones sucesivas en la ventana.                                                           | Detectar “ráfagas” de transacciones muy juntas, indicativo de automatización.                                                                     |
+- Se analizaron más de 21 millones de transacciones, identificando:
+  - Outliers en número y monto de transacciones por usuario/día.
+  - Patrones de ráfagas (intervalos cortos), concentración de comercios y repetición de montos.
+- Se validó la hipótesis: los usuarios que fraccionan presentan alta frecuencia, baja variabilidad y concentración en pocos comercios.
+- Se generaron features clave: `cnt_24h`, `sum_24h`, `avg_amount`, `unique_merchants`, `same_amount_ratio`, `merchant_concentration`, `avg_interval_minutes`.
 
 ---
 
-## 5. Estadística global y cálculo de z-scores
+## 3. Modelos Analíticos
 
-1. **Histórico de referencia**  
-   Reunir *todas* las ventanas de 24 h de los últimos **90 días**, para cada cuenta y usuario.
+### Modelo 1: Descriptivo y Heurístico
 
-2. **Media (μ) y desviación estándar (σ)**  
-   Para cada métrica (cnt_24h, sum_24h, cnt_merchants_24h, …, tiempo_entre_tx) calculamos:  
+- Basado en reglas y umbrales derivados del EDA.
+- Permite identificar casos críticos y patrones atípicos de forma interpretable.
+- Hallazgos:
+  - Solo el 0.003% de usuarios presentaron scores críticos.
+  - Se detectaron patrones de automatización y evasión.
+
+### Modelo 2: Pipeline Automatizado (Isolation Forest)
+
+- **Flujo:**
+  1. **Ingesta y limpieza:** Filtrado y particionado de datos diarios.
+  2. **Featurización:** Cálculo de métricas clave por usuario/día.
+  3. **Entrenamiento:** Isolation Forest aprende el comportamiento normal.
+  4. **Scoring:** Se calcula un `anomaly_score` y flags de alerta para cada usuario/día.
+  5. **Consolidación:** Se genera un ranking de los casos más anómalos.
+- **Métricas principales:**  
+  - Algoritmo: Suspicion Score (Isolation Forest)
+  - Umbral: 3σ (99.85% especificidad)
+  - Features: frecuencia, montos, concentración, intervalos, etc.
+- **Hallazgos:**  
+  - Los usuarios más anómalos presentan alta frecuencia, montos elevados y baja diversidad de comercios.
+  - El pipeline permite priorizar casos críticos para revisión manual.
+
+---
+
+## 4. Uso del Pipeline con Docker
+
+### Requisitos
+
+- Tener Docker instalado.
+
+### Ejecución rápida
+
+1. **Construir la imagen (solo una vez):**
+   ```bash
+   docker build -t nequi-pipeline .
    ```
-   μ_x = promedio histórico de x
-   σ_x = desviación estándar histórica de x
+
+2. **Ejecutar el scoring (creando la carpeta de alertas si es necesario):**
+   ```bash
+   docker run --rm --entrypoint /bin/sh nequi-pipeline -c "mkdir -p data/alerts && python pipeline/4_score.py --start-date 2021-01-01 --end-date 2021-01-10"
    ```
 
-3. **Z-score**  
-   Para cada métrica x en la ventana actual:
+3. **(Opcional) Guardar los resultados fuera del contenedor:**
+   ```bash
+   docker run --rm -v $(pwd)/outputs:/app/data/alerts --entrypoint /bin/sh nequi-pipeline -c "mkdir -p data/alerts && python pipeline/4_score.py --start-date 2021-01-01 --end-date 2021-01-10"
    ```
-   z_x = (x_observado – μ_x) / σ_x
-   ```
-   Indica “cuántas desviaciones estándar” estás por encima (o por debajo, si es negativo) de la media.
 
 ---
 
-## 6. Suspicion Score y umbral de alerta
+## 5. Frecuencia de actualización y despliegue
 
-- **Fórmula**  
-  ```  
-  Suspicion_Score = Σ_i ( w_i · z_i )
-  ```  
-  donde cada z_i es el z-score de una feature derivada, y w_i su peso (inicialmente todos = 1).
-
-- **Umbral**  
-  - Se fija **Score ≥ 3** (equivale a “3σ”): solo ~0.15 % de los casos superaría esto en una distribución normal.
-  - Fácil de justificar ante auditoría (“3 desviaciones estándar” es estándar en detección de anomalías).
-
-- **Salida final**  
-  Cada ejecucion genera una tabla:
-
-  | Columna             | Descripción                                                           |
-  |---------------------|-----------------------------------------------------------------------|
-  | `account_number`    | Cuenta analizada                                                     |
-  | `window_start`      | Inicio de la ventana 24 h                                            |
-  | `window_end`        | Fin de la ventana 24 h                                               |
-  | Todas las features  | cnt_24h, sum_24h, cnt_merchants_24h, …                                 |
-  | Todos los z_scores  | z_cnt, z_sum, z_merchants, …                                          |
-  | `Suspicion_Score`   | Suma ponderada de z_scores                                           |
-  | `flag_suspicious`   | Booleano: `true` si `Suspicion_Score ≥ 3`                             |
+- **Frecuencia recomendada:** Ejecución diaria (batch) para detectar patrones recientes y adaptarse a cambios de comportamiento.
+- **Despliegue:** El pipeline es portable vía Docker, lo que facilita su integración en cualquier entorno operativo.
 
 ---
 
-## 7. Frecuencia y modo de operación
+## 6. Resumen de pasos y entregables
 
-- **Ejecución batch diaria** a las **02:00 AM** (America/Bogotá).  
-- **Rolling window** de **90 días** para recalcular μ y σ y adaptarse a cambios de actividad.  
-- Todo el proceso se implementa en **Python/Pandas** (o Spark si el volumen lo exige), rastreado con **MLflow local** y empaquetado en **Docker** para reproducibilidad completa.
+1. **Exploración y limpieza de datos:** Análisis de calidad, outliers y patrones.
+2. **Generación de features:** Métricas clave para modelado.
+3. **Modelado y scoring:** Dos enfoques, uno heurístico y otro automatizado.
+4. **Documentación y hallazgos:** Explicación detallada de cada etapa y resultados.
+5. **Producto de datos listo para producción:** Pipeline reproducible y portable con Docker.
+
+---
+
+## 7. Repositorio y ejecución
+
+- El repositorio contiene scripts, modelo entrenado y features de ejemplo (enero).
+- Solo se suben los features de enero como muestra, para facilitar pruebas y mostrar el formato esperado. Los features completos no se incluyen para evitar archivos pesados y porque pueden regenerse fácilmente.
+- El pipeline está preparado para generar todos los features a partir de los datos brutos, siguiendo los scripts de limpieza y featurización.
+- Para probar el pipeline, solo necesitas Docker y seguir las instrucciones de la sección 4.
+
+---
+
+## 8. Consideraciones finales
+
+- La solución es flexible, escalable y fácilmente interpretable.
+- Permite priorizar casos críticos y automatizar la detección de fraccionamiento.
+- Se documenta cada etapa y se entregan hallazgos claros, alineados con los objetivos de la prueba.
+
+---
+
+## 9. Respuestas a los puntos clave de la prueba
+
+### 1. Flujo de datos y criterio de selección del modelo final
+
+- **Flujo de datos:**
+  1. **Ingesta:** Se reciben los datos brutos diarios, se filtran por fecha y se limpian (eliminación de duplicados, valores atípicos y validación de estructura).
+  2. **Featurización:** Se generan métricas clave por usuario y día, como frecuencia, suma de montos, concentración de comercios, variabilidad y patrones de intervalos.
+  3. **Entrenamiento:** Se utiliza Isolation Forest para aprender el comportamiento normal de los usuarios a partir del histórico de features.
+  4. **Scoring:** El modelo calcula un anomaly_score y flags de alerta para cada usuario/día, priorizando los casos más anómalos.
+  5. **Consolidación y alertas:** Se genera un ranking de los usuarios más sospechosos y se consolidan los resultados para revisión manual o integración con sistemas de monitoreo.
+- **Criterio de selección:**
+  - Se eligió Isolation Forest por su capacidad para detectar outliers en conjuntos de datos no etiquetados, su robustez ante ruido y su fácil integración en pipelines productivos. Además, permite ajustar el umbral de alerta y es interpretable para equipos de negocio.
+  - El modelo heurístico se mantuvo como referencia y validación cruzada, pero el pipeline automatizado es más escalable y reproducible.
+
+### 2. Frecuencia de actualización de los datos
+
+- **Recomendación:** Actualización y scoring diario.
+- **Justificación:**
+  - El fraccionamiento puede ocurrir en cualquier momento y es importante detectar patrones recientes para una respuesta oportuna.
+  - La actualización diaria permite recalibrar el modelo con nuevos datos, adaptarse a cambios de comportamiento y reducir falsos positivos.
+  - En escenarios de alto riesgo, se podría aumentar la frecuencia a varias veces al día (batch o streaming), pero el análisis muestra que la ventana de 24h es suficiente para la mayoría de los casos.
+- **Reentrenamiento del modelo:**
+  - Se recomienda reentrenar el modelo Isolation Forest al menos una vez al mes, o ante cambios significativos en los patrones de datos, para asegurar que el modelo se mantenga actualizado y relevante frente a nuevas tendencias de comportamiento.
+
+### 3. Arquitectura ideal y recursos necesarios (Opcional)
+
+- **Arquitectura propuesta:**
+  - **Ingesta:** Proceso ETL diario que extrae los datos transaccionales y los almacena en un data lake o base de datos particionada por fecha.
+  - **Procesamiento:** Un pipeline orquestado (por ejemplo, con Airflow, Prefect o similar) que ejecuta los scripts de limpieza, featurización y scoring.
+  - **Modelo:** El modelo Isolation Forest se entrena periódicamente y se versiona para trazabilidad.
+  - **Despliegue:** El pipeline se empaqueta en un contenedor Docker, facilitando su despliegue en cualquier entorno (on-premise, nube, etc.).
+  - **Almacenamiento de resultados:** Las alertas y scores se almacenan en una base de datos o sistema de reportes para revisión y acción.
+  - **Recursos:**
+    - CPU y RAM moderados (el pipeline es eficiente y puede correr en servidores estándar).
+    - Almacenamiento para features históricos y resultados.
+    - Opcional: integración con sistemas de monitoreo y dashboards para visualización de alertas.
+
+---
